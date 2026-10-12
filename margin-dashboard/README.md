@@ -11,13 +11,20 @@ An executive financial dashboard and cost-absorption engine built to calculate t
 - npm
 
 ### 1. Clone & Install
+You can install dependencies directly from the root repository or inside `margin-dashboard/`:
+
 ```bash
+# Option A: From root
+npm run install:all
+
+# Option B: From project directory
 cd margin-dashboard
 npm install
 ```
 
 ### 2. Run Development Server (Auto-Seeded)
 ```bash
+# From root (or inside margin-dashboard):
 npm run dev
 ```
 Open **[http://localhost:3000](http://localhost:3000)** in your browser.
@@ -26,13 +33,15 @@ Open **[http://localhost:3000](http://localhost:3000)** in your browser.
 
 ### 3. Optional: Manual Re-Seed & Reconciliation Verification
 ```bash
+# From root (or inside margin-dashboard):
 npm run seed
 ```
 This re-runs the seed script against `sample-data/` and prints the month-by-month reconciliation check to your terminal.
 
 ### 4. Run Unit Tests
 ```bash
-npm test
+# From root (or inside margin-dashboard):
+npm run test
 ```
 Runs 38 unit tests covering formula calculations, divide-by-zero guards, and synthetic messy spreadsheet edge cases.
 
