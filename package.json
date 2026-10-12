@@ -4,6 +4,7 @@
   "private": true,
   "description": "Executive Margin Dashboard - Root Forwarding Scripts",
   "scripts": {
+    "postinstall": "cd margin-dashboard && npm install",
     "dev": "cd margin-dashboard && npm run dev",
     "build": "cd margin-dashboard && npm run build",
     "start": "cd margin-dashboard && npm run start",
