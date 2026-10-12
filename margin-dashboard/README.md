@@ -16,23 +16,38 @@ cd margin-dashboard
 npm install
 ```
 
-### 2. Ingest Sample Data & Run Reconciliation Self-Check
-```bash
-npm run seed
-```
-This parses the 3 spreadsheets (`timesheet-2025.xlsx`, `salaries-2025.xlsx`, `project-prices-2025.xlsx`) from `../data`, populates the local SQLite database (`db/margin.db`), and prints the month-by-month reconciliation check to your terminal.
-
-### 3. Run Development Server
+### 2. Run Development Server (Auto-Seeded)
 ```bash
 npm run dev
 ```
 Open **[http://localhost:3000](http://localhost:3000)** in your browser.
+
+> **Automatic Sample Seeding:** When you boot up a fresh clone, the system detects that the local SQLite database is empty and automatically ingests the sample spreadsheets from `sample-data/`. The dashboard will immediately open fully populated with all 11 client contracts, 12 employees, and full-year financial figures.
+
+### 3. Optional: Manual Re-Seed & Reconciliation Verification
+```bash
+npm run seed
+```
+This re-runs the seed script against `sample-data/` and prints the month-by-month reconciliation check to your terminal.
 
 ### 4. Run Unit Tests
 ```bash
 npm test
 ```
 Runs 38 unit tests covering formula calculations, divide-by-zero guards, and synthetic messy spreadsheet edge cases.
+
+---
+
+## ⚙️ How Auto-Seeding & Persistence Work
+
+1. **First Run (Empty DB):**
+   - On the very first request (or server boot), `getDb()` initializes `db/margin.db` and applies the schema.
+   - `ensureDataSeeded()` checks `SELECT COUNT(*) FROM timesheet`. If the count is 0, it reads the 3 sample Excel files from `sample-data/` (`timesheet-2025.xlsx`, `salaries-2025.xlsx`, `project-prices-2025.xlsx`) and populates the database.
+2. **Subsequent Runs (User Data Protection):**
+   - If `timesheet` already has records (including files uploaded by the user through the UI), the auto-seed routine **completely exits**.
+   - It will **never overwrite, delete, or reset** existing data or user uploads.
+3. **Re-upload Safety:**
+   - When a corrected month is uploaded via the UI modal, only that specific `(year, month)` pair is replaced; other months and custom records remain intact.
 
 ---
 
@@ -102,6 +117,22 @@ $$\sum_{\text{employees}} \text{Billable Hours} \times (\text{Direct Rate} + \te
    - Supports `"Month YYYY"` (e.g. `January 2025`), `"Mon 'YY"` (e.g. `May '25`), and Excel serial numeric dates.
 6. **Hyphen (`"-"`) & Empty Cell Handling:**
    - Any cell containing `"-"`, whitespace, or empty string is cast to `null`. If numerical fields (like hours) are missing, the row emits a structured warning rather than crashing.
+
+---
+
+## ⚠️ Known Limitations & What I'm Not Happy With
+
+To be completely honest about architectural decisions and constraints:
+
+1. **Project Revenue Recognition is Whole-Contract, Not Pro-Rata / Accrued:**
+   - In the data, `project_prices` provides a single total contract price per project (e.g., AED 560,000 for Meridian).
+   - In the monthly view, revenue is attributed based on whether a project was active in that month. In real-world accounting, projects spanning 6 months would recognize revenue pro-rata against percentage of completion or milestones. Because milestones were not present in the brief, project price is treated as a lump sum.
+2. **Single SQLite Database Connection File (Concurrency):**
+   - We used `better-sqlite3` with WAL mode enabled, which is synchronous and fast for a local deployment. However, SQLite does not support distributed writes. If multiple administrators upload 50MB spreadsheets simultaneously, write transactions are serialized.
+3. **Client-Side State vs URL Search Params:**
+   - On the Dashboard, Year and Month filters currently use React component state rather than syncing to browser URL search params (`?year=2025&month=5`). Bookmarking or sharing a deep link to a specific month filter requires an extra click.
+4. **Hardcoded Initial Year Fallback in Parser:**
+   - In `src/lib/parser.ts`, the salary parser infers the year by searching headers for a 4-digit number (e.g., `2025`) and defaults to `2025` if no 4-digit year is found in the headers. While effective for the provided dataset, a strictly dynamic multi-year salary sheet without header year labels would require user input.
 
 ---
 

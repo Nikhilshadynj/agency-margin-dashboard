@@ -1,32 +1,49 @@
 /**
- * Seed script: reads the 3 Excel files from data/ directory
+ * Seed module: reads the 3 Excel files from sample-data/ directory
  * and ingests them into the SQLite database.
- * Then runs selfCheck to verify the exact AED reconciliation.
+ * If force=false and database already has records, skips seeding to preserve user data.
  */
 
 import fs from 'fs';
 import path from 'path';
 import { parseExcelBuffer, ParsedTimesheetRow, ParsedSalaryRow, ParsedProjectRow } from '../src/lib/parser';
-import { getDb, deleteTimesheetMonth, deleteSalaryMonth, getBillableCategories, getMonthlyOverhead } from '../src/lib/db';
+import { getDb, deleteTimesheetMonth, deleteSalaryMonth, getBillableCategories } from '../src/lib/db';
 import { getTimesheetRows, getSalaryRows } from '../src/lib/queries';
 import { computeMonthRates, selfCheck, MonthInput } from '../src/lib/calculations';
 
-const DATA_DIR = path.resolve(__dirname, '../../data');
+const SAMPLE_DATA_DIR = path.resolve(__dirname, '../sample-data');
 
 function loadFile(filename: string): Buffer {
-  const filepath = path.join(DATA_DIR, filename);
+  const filepath = path.join(SAMPLE_DATA_DIR, filename);
   if (!fs.existsSync(filepath)) {
-    throw new Error(`File not found: ${filepath}`);
+    // Fallback if running from a different context
+    const fallbackPath = path.resolve(process.cwd(), 'sample-data', filename);
+    if (fs.existsSync(fallbackPath)) {
+      return fs.readFileSync(fallbackPath);
+    }
+    throw new Error(`Sample file not found: ${filepath} (or ${fallbackPath})`);
   }
   return fs.readFileSync(filepath);
 }
 
-async function runSeed() {
-  console.log('--- 1. Ingesting Real Excel Files ---');
+export function autoSeedIfEmpty(): boolean {
+  const db = getDb();
+  const countRow = db.prepare('SELECT COUNT(*) as count FROM timesheet').get() as { count: number };
+  if (countRow && countRow.count > 0) {
+    // Database already has records, do not overwrite user data!
+    return false;
+  }
+
+  console.log('[AutoSeed] Empty database detected. Ingesting sample data from sample-data/ ...');
+  runSeedSync(false);
+  return true;
+}
+
+export function runSeedSync(verbose = true) {
   const db = getDb();
 
-  // Ingest Project Prices
-  console.log('Parsing project-prices-2025.xlsx...');
+  // 1. Ingest Project Prices
+  if (verbose) console.log('Parsing project-prices-2025.xlsx...');
   const projBuf = loadFile('project-prices-2025.xlsx');
   const projRes = parseExcelBuffer(projBuf);
   if (!projRes.ok) throw new Error(projRes.error);
@@ -41,10 +58,10 @@ async function runSeed() {
       upsertProj.run(r.ref_code, r.name, r.price, r.sales_month, r.category, r.status);
     }
   })();
-  console.log(`✓ Inserted/Updated ${projRows.length} project price rows.`);
+  if (verbose) console.log(`✓ Inserted/Updated ${projRows.length} project price rows.`);
 
-  // Ingest Salaries
-  console.log('Parsing salaries-2025.xlsx...');
+  // 2. Ingest Salaries
+  if (verbose) console.log('Parsing salaries-2025.xlsx...');
   const salBuf = loadFile('salaries-2025.xlsx');
   const salRes = parseExcelBuffer(salBuf);
   if (!salRes.ok) throw new Error(salRes.error);
@@ -64,10 +81,10 @@ async function runSeed() {
       insertSal.run(r.year, r.month_num, r.employee_no, r.employee_name, r.salary);
     }
   })();
-  console.log(`✓ Inserted ${salRows.length} salary records across months.`);
+  if (verbose) console.log(`✓ Inserted ${salRows.length} salary records across months.`);
 
-  // Ingest Timesheet
-  console.log('Parsing timesheet-2025.xlsx...');
+  // 3. Ingest Timesheet
+  if (verbose) console.log('Parsing timesheet-2025.xlsx...');
   const tsBuf = loadFile('timesheet-2025.xlsx');
   const tsRes = parseExcelBuffer(tsBuf);
   if (!tsRes.ok) throw new Error(tsRes.error);
@@ -94,68 +111,70 @@ async function runSeed() {
       );
     }
   })();
-  console.log(`✓ Inserted ${tsRows.length} timesheet rows across months.`);
+  if (verbose) console.log(`✓ Inserted ${tsRows.length} timesheet rows across months.`);
 
-  // --- 2. Self Check Verification ---
-  console.log('\n--- 2. Running Self-Check Reconciliation (Overhead = 0) ---');
-  const billable = getBillableCategories();
-  const allTs = getTimesheetRows({ year: 2025 });
-  const allSal = getSalaryRows({ year: 2025 });
+  // 4. Verification Check
+  if (verbose) {
+    console.log('\n--- Running Self-Check Reconciliation (Overhead = 0) ---');
+    const billable = getBillableCategories();
+    const allTs = getTimesheetRows({ year: 2025 });
+    const allSal = getSalaryRows({ year: 2025 });
 
-  const monthKeys = [...new Set(allTs.map(r => `${r.year}-${r.month_num}`))].sort((a,b) => {
-    const [ya, ma] = a.split('-').map(Number);
-    const [yb, mb] = b.split('-').map(Number);
-    return ya !== yb ? ya - yb : ma - mb;
-  });
-
-  const monthInputs: MonthInput[] = monthKeys.map(key => {
-    const [y, m] = key.split('-').map(Number);
-    const monthTs = allTs.filter(r => r.year === y && r.month_num === m);
-    const monthSal = allSal.filter(r => r.year === y && r.month_num === m);
-
-    const empNos = [...new Set([...monthTs.map(r => r.employee_no), ...monthSal.map(r => r.employee_no)])];
-    const employees = empNos.map(empNo => {
-      const empRows = monthTs.filter(r => r.employee_no === empNo);
-      const salRow = monthSal.find(r => r.employee_no === empNo);
-      const totalH = empRows.reduce((s, r) => s + r.hours, 0);
-      const billableH = empRows.filter(r => billable.includes(r.category)).reduce((s, r) => s + r.hours, 0);
-      return {
-        employee_no: empNo,
-        employee_name: empRows[0]?.employee_name ?? salRow?.employee_name ?? empNo,
-        salary: salRow?.salary ?? null,
-        total_hours: totalH,
-        billable_hours: billableH,
-        non_billable_hours: totalH - billableH,
-      };
+    const monthKeys = [...new Set(allTs.map(r => `${r.year}-${r.month_num}`))].sort((a,b) => {
+      const [ya, ma] = a.split('-').map(Number);
+      const [yb, mb] = b.split('-').map(Number);
+      return ya !== yb ? ya - yb : ma - mb;
     });
 
-    return { year: y, month_num: m, employees, overhead: 0 };
-  });
+    const monthInputs: MonthInput[] = monthKeys.map(key => {
+      const [y, m] = key.split('-').map(Number);
+      const monthTs = allTs.filter(r => r.year === y && r.month_num === m);
+      const monthSal = allSal.filter(r => r.year === y && r.month_num === m);
 
-  const monthResults = monthInputs.map(input => computeMonthRates(input));
-  const check = selfCheck(monthInputs, monthResults);
+      const empNos = [...new Set([...monthTs.map(r => r.employee_no), ...monthSal.map(r => r.employee_no)])];
+      const employees = empNos.map(empNo => {
+        const empRows = monthTs.filter(r => r.employee_no === empNo);
+        const salRow = monthSal.find(r => r.employee_no === empNo);
+        const totalH = empRows.reduce((s, r) => s + r.hours, 0);
+        const billableH = empRows.filter(r => billable.includes(r.category)).reduce((s, r) => s + r.hours, 0);
+        return {
+          employee_no: empNo,
+          employee_name: empRows[0]?.employee_name ?? salRow?.employee_name ?? empNo,
+          salary: salRow?.salary ?? null,
+          total_hours: totalH,
+          billable_hours: billableH,
+          non_billable_hours: totalH - billableH,
+        };
+      });
 
-  console.log('\nMonth-by-Month Reconciliation:');
-  console.log('Month   | Total Salaries (AED) | Total Cost (AED) | Match?');
-  console.log('---------------------------------------------------------');
-  for (const m of check.per_month) {
-    const monthStr = `${m.year}-${String(m.month_num).padStart(2, '0')}`;
-    const status = m.ok ? '✅ PASS' : '❌ FAIL';
-    console.log(`${monthStr} | ${m.salaries.toLocaleString().padStart(20)} | ${m.cost.toLocaleString().padStart(16)} | ${status}`);
-  }
+      return { year: y, month_num: m, employees, overhead: 0 };
+    });
 
-  console.log('---------------------------------------------------------');
-  console.log(`Full Year Salaries: AED ${check.total_salaries.toLocaleString()}`);
-  console.log(`Full Year Cost    : AED ${check.total_cost.toLocaleString()}`);
-  console.log(`Difference        : AED ${check.difference}`);
-  console.log(`Result            : ${check.passed ? '🎉 PASSED TO THE DIRHAM!' : '❌ RECONCILIATION FAILED'}`);
+    const monthResults = monthInputs.map(input => computeMonthRates(input));
+    const check = selfCheck(monthInputs, monthResults);
 
-  if (!check.passed) {
-    process.exit(1);
+    console.log('\nMonth-by-Month Reconciliation:');
+    console.log('Month   | Total Salaries (AED) | Total Cost (AED) | Match?');
+    console.log('---------------------------------------------------------');
+    for (const m of check.per_month) {
+      const monthStr = `${m.year}-${String(m.month_num).padStart(2, '0')}`;
+      const status = m.ok ? '✅ PASS' : '❌ FAIL';
+      console.log(`${monthStr} | ${m.salaries.toLocaleString().padStart(20)} | ${m.cost.toLocaleString().padStart(16)} | ${status}`);
+    }
+
+    console.log('---------------------------------------------------------');
+    console.log(`Full Year Salaries: AED ${check.total_salaries.toLocaleString()}`);
+    console.log(`Full Year Cost    : AED ${check.total_cost.toLocaleString()}`);
+    console.log(`Difference        : AED ${check.difference}`);
+    console.log(`Result            : ${check.passed ? '🎉 PASSED TO THE DIRHAM!' : '❌ RECONCILIATION FAILED'}`);
+
+    if (!check.passed) {
+      process.exit(1);
+    }
   }
 }
 
-runSeed().catch(err => {
-  console.error('Seed failed:', err);
-  process.exit(1);
-});
+// CLI direct execution
+if (require.main === module) {
+  runSeedSync(true);
+}

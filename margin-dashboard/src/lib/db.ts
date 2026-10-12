@@ -18,6 +18,8 @@ import fs from 'fs';
 const DB_DIR = path.join(process.cwd(), 'db');
 const DB_PATH = path.join(DB_DIR, 'margin.db');
 
+import { ensureDataSeeded } from './autoSeed';
+
 let _db: Database.Database | null = null;
 
 export function getDb(): Database.Database {
@@ -27,6 +29,7 @@ export function getDb(): Database.Database {
   _db.pragma('journal_mode = WAL');
   _db.pragma('foreign_keys = ON');
   applySchema(_db);
+  ensureDataSeeded(_db);
   return _db;
 }
 
