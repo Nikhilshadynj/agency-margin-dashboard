@@ -4,11 +4,10 @@
   "private": true,
   "description": "Executive Margin Dashboard - Root Forwarding Scripts",
   "scripts": {
-    "install:all": "npm --prefix margin-dashboard install",
-    "dev": "npm --prefix margin-dashboard run dev",
-    "build": "npm --prefix margin-dashboard run build",
-    "start": "npm --prefix margin-dashboard run start",
-    "test": "npm --prefix margin-dashboard run test",
-    "seed": "npm --prefix margin-dashboard run seed"
+    "dev": "cd margin-dashboard && npm run dev",
+    "build": "cd margin-dashboard && npm run build",
+    "start": "cd margin-dashboard && npm run start",
+    "test": "cd margin-dashboard && npm run test",
+    "seed": "cd margin-dashboard && npm run seed"
   }
 }
